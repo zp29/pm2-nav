@@ -1,0 +1,16 @@
+services:
+  pm2-nav:
+    build: .
+    image: ${PM2_NAV_IMAGE:-pm2-nav:latest}
+    container_name: pm2-nav
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    environment:
+      NAV_HOST: 0.0.0.0
+      NAV_PORT: 80
+      PM2_HOME: /root/.pm2
+      PM2_NAV_HIDE_SELF: 1
+      PM2_NAV_DETECT_LISTEN: 1
+    volumes:
+      - ${HOME}/.pm2:/root/.pm2

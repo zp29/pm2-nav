@@ -1,0 +1,14 @@
+{
+  "name": "pm2-nav",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A clean PM2 service navigation page that links services through the current browser host.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "pm2:start": "pm2 start ecosystem.config.cjs",
+    "pm2:reload": "pm2 reload pm2-nav",
+    "check": "node --check server.js"
+  },
+  "license": "UNLICENSED"
+}
