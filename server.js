@@ -1,6 +1,7 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 
@@ -12,7 +13,15 @@ const PM2_BIN = process.env.PM2_BIN || 'pm2';
 const PM2_TIMEOUT_MS = toInteger(process.env.PM2_NAV_TIMEOUT_MS, 5000);
 const DETECT_LISTEN_PORTS = process.env.PM2_NAV_DETECT_LISTEN !== '0';
 const HIDE_SELF = process.env.PM2_NAV_HIDE_SELF !== '0';
+const DATA_DIR = process.env.PM2_NAV_DATA_DIR || path.join(__dirname, 'data');
+const CONFIG_PATH = process.env.PM2_NAV_CONFIG || path.join(DATA_DIR, 'config.json');
 const INDEX_PATH = path.join(__dirname, 'public', 'index.html');
+const LOGIN_PATH = path.join(__dirname, 'public', 'login.html');
+const SESSION_COOKIE = 'pm2_nav_session';
+const SESSION_TTL_MS = toInteger(process.env.PM2_NAV_SESSION_TTL_MS, 7 * 24 * 60 * 60 * 1000);
+const BODY_LIMIT_BYTES = toInteger(process.env.PM2_NAV_BODY_LIMIT_BYTES, 64 * 1024);
+const sessions = new Map();
+let configWriteQueue = Promise.resolve();
 
 const PORT_KEYS = [
   'PORT',
@@ -43,36 +52,75 @@ const PORT_KEYS = [
 const server = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url, getRequestOrigin(req));
 
-  if (req.method !== 'GET') {
-    sendJson(res, 405, { ok: false, message: 'Method Not Allowed' });
-    return;
-  }
+  try {
+    if (requestUrl.pathname === '/health') {
+      sendJson(res, 200, {
+        ok: true,
+        name: 'pm2-nav',
+        port: NAV_PORT,
+        configPath: CONFIG_PATH,
+        generatedAt: new Date().toISOString(),
+      });
+      return;
+    }
 
-  if (requestUrl.pathname === '/' || requestUrl.pathname === '/index.html') {
-    sendHtml(res, fs.readFileSync(INDEX_PATH, 'utf8'));
-    return;
-  }
+    if (requestUrl.pathname === '/api/session' && req.method === 'GET') {
+      handleSession(req, res);
+      return;
+    }
 
-  if (requestUrl.pathname === '/api/apps') {
-    await handleApps(req, res);
-    return;
-  }
+    if (requestUrl.pathname === '/api/login' && req.method === 'POST') {
+      await handleLogin(req, res);
+      return;
+    }
 
-  if (requestUrl.pathname === '/health') {
-    sendJson(res, 200, {
-      ok: true,
-      name: 'pm2-nav',
-      port: NAV_PORT,
+    if (requestUrl.pathname === '/api/logout' && req.method === 'POST') {
+      handleLogout(res);
+      return;
+    }
+
+    if (requestUrl.pathname === '/' || requestUrl.pathname === '/index.html') {
+      if (!isRequestAuthenticated(req, loadConfig())) {
+        sendHtml(res, fs.readFileSync(LOGIN_PATH, 'utf8'));
+        return;
+      }
+
+      sendHtml(res, fs.readFileSync(INDEX_PATH, 'utf8'));
+      return;
+    }
+
+    if (requestUrl.pathname === '/login' || requestUrl.pathname === '/login.html') {
+      const config = loadConfig();
+      if (!isAuthEnabled(config) || isRequestAuthenticated(req, config)) {
+        sendRedirect(res, '/');
+        return;
+      }
+
+      sendHtml(res, fs.readFileSync(LOGIN_PATH, 'utf8'));
+      return;
+    }
+
+    if (requestUrl.pathname.startsWith('/api/')) {
+      const guard = requireAuth(req, res);
+      if (!guard.ok) return;
+
+      await handleApi(req, res, requestUrl, guard.config);
+      return;
+    }
+
+    sendJson(res, 404, { ok: false, message: 'Not Found' });
+  } catch (error) {
+    sendJson(res, error instanceof PublicError ? error.statusCode : 500, {
+      ok: false,
+      message: error.message || 'Server error',
       generatedAt: new Date().toISOString(),
     });
-    return;
   }
-
-  sendJson(res, 404, { ok: false, message: 'Not Found' });
 });
 
 server.listen(NAV_PORT, NAV_HOST, () => {
   console.log(`PM2 nav is listening on http://${NAV_HOST}:${NAV_PORT}`);
+  console.log(`PM2 nav config path: ${CONFIG_PATH}`);
 });
 
 server.on('error', (error) => {
@@ -89,28 +137,164 @@ server.on('error', (error) => {
   throw error;
 });
 
-async function handleApps(req, res) {
-  try {
-    const apps = await getPm2Apps();
-    sendJson(res, 200, {
-      ok: true,
-      host: getRequestHostname(req),
-      generatedAt: new Date().toISOString(),
-      apps,
-    });
-  } catch (error) {
-    sendJson(res, 500, {
-      ok: false,
-      message: error.message || 'PM2 read failed',
-      generatedAt: new Date().toISOString(),
-      apps: [],
-    });
+async function handleApi(req, res, requestUrl, config) {
+  if (requestUrl.pathname === '/api/apps' && req.method === 'GET') {
+    await handleApps(res, config);
+    return;
   }
+
+  if (requestUrl.pathname === '/api/custom-links' && req.method === 'POST') {
+    await handleCreateCustomLink(req, res);
+    return;
+  }
+
+  const customLinkMatch = requestUrl.pathname.match(/^\/api\/custom-links\/([^/]+)$/);
+  if (customLinkMatch && req.method === 'PATCH') {
+    await handleUpdateCustomLink(req, res, decodeURIComponent(customLinkMatch[1]));
+    return;
+  }
+
+  if (customLinkMatch && req.method === 'DELETE') {
+    await handleDeleteCustomLink(res, decodeURIComponent(customLinkMatch[1]));
+    return;
+  }
+
+  if (requestUrl.pathname === '/api/aliases' && req.method === 'POST') {
+    await handleAlias(req, res);
+    return;
+  }
+
+  sendJson(res, 404, { ok: false, message: 'Not Found' });
 }
 
-async function getPm2Apps() {
+function handleSession(req, res) {
+  const config = loadConfig();
+  const session = getSession(req);
+  const authRequired = isAuthEnabled(config);
+
+  sendJson(res, 200, {
+    ok: true,
+    authRequired,
+    authenticated: !authRequired || Boolean(session),
+    username: session ? session.username : null,
+  });
+}
+
+async function handleLogin(req, res) {
+  const config = loadConfig();
+  if (!isAuthEnabled(config)) {
+    sendJson(res, 200, { ok: true, authRequired: false });
+    return;
+  }
+
+  const body = await readJsonBody(req);
+  const username = String(body.username || '');
+  const password = String(body.password || '');
+
+  if (!verifyCredentials(config, username, password)) {
+    sendJson(res, 401, { ok: false, message: '账号或密码不正确' });
+    return;
+  }
+
+  const token = createSession(username);
+  sendJson(res, 200, { ok: true, authRequired: true, username }, {
+    'Set-Cookie': buildSessionCookie(token),
+  });
+}
+
+function handleLogout(res) {
+  sendJson(res, 200, { ok: true }, {
+    'Set-Cookie': buildExpiredSessionCookie(),
+  });
+}
+
+async function handleApps(res, config) {
+  const apps = await getPm2Apps(config);
+  sendJson(res, 200, {
+    ok: true,
+    config: {
+      authRequired: isAuthEnabled(config),
+      configPath: CONFIG_PATH,
+    },
+    generatedAt: new Date().toISOString(),
+    apps,
+    customLinks: config.customLinks,
+  });
+}
+
+async function handleCreateCustomLink(req, res) {
+  const body = await readJsonBody(req);
+  const { result: link } = await updateConfig((config) => {
+    const customLink = buildCustomLink(body);
+    config.customLinks.push(customLink);
+    return customLink;
+  });
+
+  sendJson(res, 201, { ok: true, customLink: link });
+}
+
+async function handleUpdateCustomLink(req, res, id) {
+  const body = await readJsonBody(req);
+  const { result: link } = await updateConfig((config) => {
+    const index = config.customLinks.findIndex((item) => item.id === id);
+    if (index === -1) {
+      throw new PublicError(404, '导航不存在');
+    }
+
+    const previous = config.customLinks[index];
+    const next = buildCustomLink({
+      ...previous,
+      ...body,
+      id: previous.id,
+      createdAt: previous.createdAt,
+    });
+
+    config.customLinks[index] = next;
+    return next;
+  });
+
+  sendJson(res, 200, { ok: true, customLink: link });
+}
+
+async function handleDeleteCustomLink(res, id) {
+  await updateConfig((config) => {
+    const nextLinks = config.customLinks.filter((item) => item.id !== id);
+    if (nextLinks.length === config.customLinks.length) {
+      throw new PublicError(404, '导航不存在');
+    }
+
+    config.customLinks = nextLinks;
+    return null;
+  });
+
+  sendJson(res, 200, { ok: true });
+}
+
+async function handleAlias(req, res) {
+  const body = await readJsonBody(req);
+  const configKey = cleanText(body.configKey, 160);
+  const alias = cleanText(body.alias, 80);
+
+  if (!configKey) {
+    sendJson(res, 400, { ok: false, message: '缺少 PM2 标识' });
+    return;
+  }
+
+  await updateConfig((config) => {
+    if (alias) {
+      config.aliases[configKey] = alias;
+    } else {
+      delete config.aliases[configKey];
+    }
+    return null;
+  });
+
+  sendJson(res, 200, { ok: true, configKey, alias: alias || null });
+}
+
+async function getPm2Apps(config) {
   const rawApps = await readPm2List();
-  let apps = rawApps.map(normalizeApp).filter(Boolean);
+  let apps = rawApps.map((app) => normalizeApp(app, config)).filter(Boolean);
 
   if (HIDE_SELF) {
     apps = apps.filter((app) => !app.isSelf);
@@ -146,18 +330,27 @@ async function readPm2List() {
   }
 }
 
-function normalizeApp(app) {
+function normalizeApp(app, config) {
   const env = app.pm2_env || {};
   const detected = detectPort(app);
   const pid = toNullableNumber(app.pid);
   const selfPmId = process.env.pm_id;
   const selfName = process.env.name || process.env.PM2_NAV_NAME || 'pm2-nav';
-  const name = app.name || env.name || `process-${app.pm_id}`;
+  const originalName = app.name || env.name || `process-${app.pm_id}`;
+  const namespace = env.namespace || 'default';
+  const configKey = createAppConfigKey(namespace, originalName);
+  const alias = cleanText(config.aliases[configKey] || config.aliases[originalName], 80);
+  const displayName = alias || originalName;
 
   return {
     id: app.pm_id,
-    name,
-    namespace: env.namespace || 'default',
+    type: 'pm2',
+    name: displayName,
+    displayName,
+    originalName,
+    configKey,
+    alias: alias || null,
+    namespace,
     status: env.status || 'unknown',
     pid,
     mode: env.exec_mode || 'fork',
@@ -169,7 +362,7 @@ function normalizeApp(app) {
     port: detected.port,
     ports: detected.port ? [detected.port] : [],
     portSource: detected.source,
-    isSelf: String(app.pm_id) === String(selfPmId) || name === selfName,
+    isSelf: String(app.pm_id) === String(selfPmId) || originalName === selfName,
   };
 }
 
@@ -323,6 +516,237 @@ function detectPortFromArgs(values) {
   return null;
 }
 
+function loadConfig() {
+  try {
+    const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+    return normalizeConfig(JSON.parse(raw));
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return normalizeConfig({});
+    }
+
+    if (error instanceof SyntaxError) {
+      throw new Error(`配置文件不是有效 JSON：${CONFIG_PATH}`);
+    }
+
+    throw error;
+  }
+}
+
+function saveConfig(config) {
+  const normalized = normalizeConfig(config);
+  fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+  const tempPath = `${CONFIG_PATH}.${process.pid}.tmp`;
+  fs.writeFileSync(tempPath, `${JSON.stringify(normalized, null, 2)}\n`);
+  fs.renameSync(tempPath, CONFIG_PATH);
+}
+
+async function updateConfig(mutator) {
+  const run = async () => {
+    const config = loadConfig();
+    const result = await mutator(config);
+    saveConfig(config);
+    return { config, result };
+  };
+
+  const next = configWriteQueue.then(run, run);
+  configWriteQueue = next.catch(() => {});
+  return next;
+}
+
+function normalizeConfig(input) {
+  const config = isPlainObject(input) ? input : {};
+  const authInput = isPlainObject(config.auth) ? config.auth : {};
+  const auth = {
+    username: cleanText(authInput.username || config.username, 120),
+    password: String(authInput.password || config.password || ''),
+    passwordSha256: cleanText(authInput.passwordSha256 || config.passwordSha256, 128),
+  };
+
+  const aliases = {};
+  if (isPlainObject(config.aliases)) {
+    Object.entries(config.aliases).forEach(([key, value]) => {
+      const cleanKey = cleanText(key, 160);
+      const cleanValue = cleanText(value, 80);
+      if (cleanKey && cleanValue) aliases[cleanKey] = cleanValue;
+    });
+  }
+
+  const customLinks = Array.isArray(config.customLinks)
+    ? config.customLinks.map(normalizeCustomLink).filter(Boolean)
+    : [];
+
+  return { auth, aliases, customLinks };
+}
+
+function buildCustomLink(input) {
+  const id = cleanText(input.id, 80) || crypto.randomUUID();
+  const name = cleanText(input.name, 80);
+  const target = input.target !== undefined
+    ? input.target
+    : (input.url !== undefined && input.url !== null && input.url !== '' ? input.url : input.port);
+
+  if (!name) {
+    throw new PublicError(400, '请输入名称');
+  }
+
+  const port = parsePort(target);
+  let url = null;
+  let finalPort = null;
+
+  if (port && String(target).trim().match(/^\d{1,5}$/)) {
+    finalPort = port;
+  } else {
+    url = normalizeUrl(target);
+  }
+
+  if (!url && !finalPort) {
+    throw new PublicError(400, '请输入完整链接或端口');
+  }
+
+  const now = new Date().toISOString();
+  return {
+    id,
+    name,
+    url,
+    port: finalPort,
+    createdAt: cleanText(input.createdAt, 40) || now,
+    updatedAt: now,
+  };
+}
+
+function normalizeCustomLink(input) {
+  if (!isPlainObject(input)) return null;
+
+  try {
+    const link = buildCustomLink(input);
+    return {
+      ...link,
+      createdAt: cleanText(input.createdAt, 40) || link.createdAt,
+      updatedAt: cleanText(input.updatedAt, 40) || link.updatedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeUrl(value) {
+  const text = cleanText(value, 500);
+  if (!text) return null;
+
+  try {
+    const parsed = new URL(text);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function isAuthEnabled(config) {
+  return Boolean(config.auth.username && (config.auth.password || config.auth.passwordSha256));
+}
+
+function requireAuth(req, res) {
+  const config = loadConfig();
+  if (isRequestAuthenticated(req, config)) {
+    return { ok: true, config };
+  }
+
+  sendJson(res, 401, { ok: false, message: '需要登录' });
+  return { ok: false, config };
+}
+
+function isRequestAuthenticated(req, config) {
+  if (!isAuthEnabled(config)) return true;
+  return Boolean(getSession(req));
+}
+
+function verifyCredentials(config, username, password) {
+  if (!safeEqual(username, config.auth.username)) return false;
+
+  if (config.auth.password) {
+    return safeEqual(password, config.auth.password);
+  }
+
+  const digest = crypto.createHash('sha256').update(password).digest('hex');
+  return safeEqual(digest, config.auth.passwordSha256);
+}
+
+function createSession(username) {
+  const token = crypto.randomBytes(32).toString('hex');
+  sessions.set(token, {
+    username,
+    expiresAt: Date.now() + SESSION_TTL_MS,
+  });
+  return token;
+}
+
+function getSession(req) {
+  const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+  if (!token) return null;
+
+  const session = sessions.get(token);
+  if (!session) return null;
+
+  if (session.expiresAt < Date.now()) {
+    sessions.delete(token);
+    return null;
+  }
+
+  return session;
+}
+
+function buildSessionCookie(token) {
+  const maxAge = Math.max(1, Math.floor(SESSION_TTL_MS / 1000));
+  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=Lax`;
+}
+
+function buildExpiredSessionCookie() {
+  return `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`;
+}
+
+function parseCookies(header) {
+  const cookies = {};
+  String(header || '').split(';').forEach((part) => {
+    const index = part.indexOf('=');
+    if (index === -1) return;
+
+    const key = part.slice(0, index).trim();
+    const value = part.slice(index + 1).trim();
+    if (!key) return;
+
+    try {
+      cookies[key] = decodeURIComponent(value);
+    } catch {
+      cookies[key] = value;
+    }
+  });
+  return cookies;
+}
+
+async function readJsonBody(req) {
+  const chunks = [];
+  let size = 0;
+
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > BODY_LIMIT_BYTES) {
+      throw new PublicError(413, '请求内容过大');
+    }
+    chunks.push(chunk);
+  }
+
+  const text = Buffer.concat(chunks).toString('utf8').trim();
+  if (!text) return {};
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new PublicError(400, '请求 JSON 无效');
+  }
+}
+
 function splitArgs(value) {
   if (!value) return [];
   if (Array.isArray(value)) return value.flatMap(splitArgs);
@@ -389,13 +813,17 @@ function compareApps(a, b) {
   return a.name.localeCompare(b.name, 'zh-Hans-CN');
 }
 
+function createAppConfigKey(namespace, name) {
+  return `${namespace || 'default'}/${name}`;
+}
+
 function getRequestOrigin(req) {
   return `http://${req.headers.host || 'localhost'}`;
 }
 
-function getRequestHostname(req) {
-  const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
-  return String(host).replace(/:\d+$/, '');
+function sendRedirect(res, location) {
+  res.writeHead(302, { Location: location });
+  res.end();
 }
 
 function sendHtml(res, html) {
@@ -406,12 +834,18 @@ function sendHtml(res, html) {
   res.end(html);
 }
 
-function sendJson(res, statusCode, payload) {
-  res.writeHead(statusCode, {
+function sendJson(res, statusCode, payload, extraHeaders = {}) {
+  const normalizedStatus = payload instanceof PublicError ? payload.statusCode : statusCode;
+  const normalizedPayload = payload instanceof PublicError
+    ? { ok: false, message: payload.message }
+    : payload;
+
+  res.writeHead(normalizedStatus, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
+    ...extraHeaders,
   });
-  res.end(JSON.stringify(payload));
+  res.end(JSON.stringify(normalizedPayload));
 }
 
 function isPlainObject(value) {
@@ -430,4 +864,29 @@ function toInteger(value, fallback) {
 function toNullableNumber(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function cleanText(value, limit) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return text.slice(0, limit);
+}
+
+function safeEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left || ''));
+  const rightBuffer = Buffer.from(String(right || ''));
+
+  if (leftBuffer.length !== rightBuffer.length) {
+    crypto.timingSafeEqual(leftBuffer, leftBuffer);
+    return false;
+  }
+
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+class PublicError extends Error {
+  constructor(statusCode, message) {
+    super(message);
+    this.statusCode = statusCode;
+  }
 }

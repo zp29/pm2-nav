@@ -11,12 +11,16 @@ ENV NODE_ENV=production \
   NAV_PORT=80 \
   PM2_BIN=pm2 \
   PM2_HOME=/root/.pm2 \
+  PM2_NAV_DATA_DIR=/data \
+  PM2_NAV_CONFIG=/data/config.json \
   PM2_NAV_HIDE_SELF=1 \
   PM2_NAV_DETECT_LISTEN=1
 
 COPY package.json ./
 COPY server.js ./server.js
 COPY public ./public
+
+VOLUME ["/data"]
 
 EXPOSE 80
 

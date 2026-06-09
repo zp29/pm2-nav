@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 PM2 服务导航</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f7f4ed;
+      --paper-strong: #fffefa;
+      --ink: #171714;
+      --soft-ink: #565a53;
+      --quiet: #85887d;
+      --line: #ded9cc;
+      --line-strong: #c9c0af;
+      --mint: #167a68;
+      --coral: #c45f46;
+      --shadow: 0 18px 50px rgba(44, 38, 26, .12);
+      --radius: 8px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      display: grid;
+      min-height: 100vh;
+      margin: 0;
+      place-items: center;
+      color: var(--ink);
+      font-family: "Avenir Next", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background-color: var(--paper);
+      background-image:
+        linear-gradient(rgba(23, 23, 20, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(23, 23, 20, .035) 1px, transparent 1px),
+        linear-gradient(135deg, #f7f4ed 0%, #eef6f1 44%, #f8eee8 100%);
+      background-size: 28px 28px, 28px 28px, 100% 100%;
+    }
+
+    .panel {
+      width: min(420px, calc(100% - 32px));
+      padding: 26px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: rgba(255, 254, 250, .88);
+      box-shadow: var(--shadow);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+
+    .mark {
+      position: relative;
+      width: 48px;
+      height: 48px;
+      flex: 0 0 48px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: var(--paper-strong);
+    }
+
+    .mark::before,
+    .mark::after {
+      position: absolute;
+      content: "";
+      inset: 12px;
+      border: 2px solid var(--mint);
+      border-radius: 50%;
+    }
+
+    .mark::after {
+      inset: 20px 10px 10px 20px;
+      border-color: var(--coral);
+      border-radius: 3px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 30px;
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+
+    .field {
+      display: block;
+      margin-top: 12px;
+    }
+
+    input {
+      width: 100%;
+      min-height: 46px;
+      padding: 0 13px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      outline: none;
+      background: var(--paper-strong);
+      color: var(--ink);
+      font: inherit;
+      transition: border-color .18s ease, box-shadow .18s ease;
+    }
+
+    input:focus {
+      border-color: var(--mint);
+      box-shadow: 0 0 0 4px rgba(22, 122, 104, .12);
+    }
+
+    button {
+      width: 100%;
+      min-height: 46px;
+      margin-top: 14px;
+      border: 1px solid var(--ink);
+      border-radius: var(--radius);
+      background: var(--ink);
+      color: var(--paper-strong);
+      cursor: pointer;
+      font: inherit;
+      transition: transform .18s ease, box-shadow .18s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 22px rgba(23, 23, 20, .18);
+    }
+
+    .message {
+      min-height: 20px;
+      margin-top: 12px;
+      color: var(--coral);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <main class="panel">
+    <section class="brand" aria-label="PM2 服务导航">
+      <div class="mark" aria-hidden="true"></div>
+      <h1>PM2 服务导航</h1>
+    </section>
+
+    <form id="loginForm">
+      <label class="field">
+        <input id="username" type="text" placeholder="账号" autocomplete="username">
+      </label>
+      <label class="field">
+        <input id="password" type="password" placeholder="密码" autocomplete="current-password">
+      </label>
+      <button type="submit">登录</button>
+      <div class="message" id="message"></div>
+    </form>
+  </main>
+
+  <script>
+    const form = document.querySelector('#loginForm');
+    const username = document.querySelector('#username');
+    const password = document.querySelector('#password');
+    const message = document.querySelector('#message');
+
+    fetch('/api/session', { cache: 'no-store' })
+      .then(function (response) { return response.json(); })
+      .then(function (payload) {
+        if (!payload.authRequired || payload.authenticated) {
+          location.href = '/';
+        }
+      })
+      .catch(function () {});
+
+    form.addEventListener('submit', async function (event) {
+      event.preventDefault();
+      message.textContent = '';
+
+      try {
+        const response = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: username.value,
+            password: password.value,
+          }),
+        });
+
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.message || '登录失败');
+        }
+
+        location.href = '/';
+      } catch (error) {
+        message.textContent = error.message;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "auth": {
+    "username": "admin",
+    "password": "change-me"
+  },
+  "aliases": {
+    "default/dev": "前端本地"
+  },
+  "customLinks": [
+    {
+      "id": "docs",
+      "name": "项目文档",
+      "url": "https://example.com/docs",
+      "port": null
+    },
+    {
+      "id": "api",
+      "name": "API",
+      "url": null,
+      "port": 8080
+    }
+  ]
+}

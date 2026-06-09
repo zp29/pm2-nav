@@ -48,6 +48,14 @@
       font: inherit;
     }
 
+    button {
+      cursor: pointer;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
     a {
       color: inherit;
       text-decoration: none;
@@ -157,12 +165,49 @@
       font-size: 12px;
     }
 
-    .toolbar {
+    .manager {
       display: grid;
-      grid-template-columns: minmax(220px, 1fr) auto auto;
+      grid-template-columns: minmax(160px, .7fr) minmax(220px, 1fr) auto;
       gap: 12px;
       align-items: center;
-      margin: 22px 0;
+      margin: 22px 0 0;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 254, 250, .7);
+      box-shadow: 0 10px 26px rgba(44, 38, 26, .06);
+    }
+
+    .field {
+      min-width: 0;
+    }
+
+    .field input,
+    .dialog-input {
+      width: 100%;
+      min-height: 44px;
+      padding: 0 13px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      outline: none;
+      background: rgba(255, 254, 250, .88);
+      color: var(--ink);
+      transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+    }
+
+    .field input:focus,
+    .dialog-input:focus {
+      border-color: var(--mint);
+      background: var(--paper-strong);
+      box-shadow: 0 0 0 4px rgba(22, 122, 104, .12);
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto auto auto;
+      gap: 12px;
+      align-items: center;
+      margin: 14px 0 22px;
     }
 
     .search {
@@ -216,7 +261,7 @@
 
     .segments {
       display: inline-grid;
-      grid-template-columns: repeat(3, minmax(64px, 1fr));
+      grid-template-columns: repeat(4, minmax(64px, 1fr));
       min-height: 44px;
       padding: 3px;
       border: 1px solid var(--line-strong);
@@ -230,7 +275,6 @@
       border-radius: 6px;
       background: transparent;
       color: var(--soft-ink);
-      cursor: pointer;
       transition: color .18s ease, background .18s ease, box-shadow .18s ease;
     }
 
@@ -240,18 +284,30 @@
       box-shadow: 0 7px 18px rgba(23, 23, 20, .18);
     }
 
-    .refresh {
-      width: 44px;
-      height: 44px;
+    .solid,
+    .refresh,
+    .logout {
+      min-height: 44px;
       border: 1px solid var(--line-strong);
       border-radius: var(--radius);
       background: var(--ink);
       color: var(--paper-strong);
-      cursor: pointer;
       transition: transform .18s ease, box-shadow .18s ease;
     }
 
-    .refresh:hover {
+    .solid {
+      padding: 0 18px;
+      white-space: nowrap;
+    }
+
+    .refresh,
+    .logout {
+      width: 44px;
+    }
+
+    .solid:hover,
+    .refresh:hover,
+    .logout:hover {
       transform: translateY(-1px);
       box-shadow: 0 10px 22px rgba(23, 23, 20, .18);
     }
@@ -282,6 +338,27 @@
       transform: rotate(-10deg);
     }
 
+    .logout-icon {
+      position: relative;
+      display: block;
+      width: 16px;
+      height: 16px;
+      margin: auto;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 3px;
+    }
+
+    .logout-icon::after {
+      position: absolute;
+      top: 5px;
+      right: -7px;
+      width: 10px;
+      height: 2px;
+      content: "";
+      background: currentColor;
+    }
+
     .statusbar {
       display: flex;
       flex-wrap: wrap;
@@ -302,8 +379,8 @@
 
     .service {
       display: grid;
-      grid-template-rows: auto 1fr auto;
-      min-height: 228px;
+      grid-template-rows: auto 1fr auto auto;
+      min-height: 236px;
       padding: 18px;
       border: 1px solid var(--line);
       border-radius: var(--radius);
@@ -370,6 +447,11 @@
     .service.online .badge {
       background: var(--mint-soft);
       color: var(--mint);
+    }
+
+    .service.custom .badge {
+      background: var(--gold-soft);
+      color: var(--gold);
     }
 
     .service.stopped .badge,
@@ -460,6 +542,30 @@
       font-size: 13px;
     }
 
+    .card-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .subtle {
+      min-height: 34px;
+      padding: 0 11px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(255, 254, 250, .76);
+      color: var(--soft-ink);
+      font-size: 12px;
+      transition: border-color .18s ease, color .18s ease, background .18s ease;
+    }
+
+    .subtle:hover {
+      border-color: var(--line-strong);
+      background: var(--paper-strong);
+      color: var(--ink);
+    }
+
     .empty,
     .error {
       min-height: 190px;
@@ -492,18 +598,54 @@
       animation: sweep 1.2s infinite;
     }
 
+    .dialog {
+      width: min(420px, calc(100vw - 28px));
+      padding: 20px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: var(--paper-strong);
+      color: var(--ink);
+      box-shadow: var(--shadow);
+    }
+
+    .dialog::backdrop {
+      background: rgba(23, 23, 20, .28);
+      backdrop-filter: blur(4px);
+    }
+
+    .dialog h2 {
+      margin: 0 0 14px;
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+
+    .dialog p {
+      margin: -6px 0 14px;
+      color: var(--quiet);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+
+    .dialog-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      margin-top: 14px;
+    }
+
     @keyframes sweep {
       from { transform: translateX(-100%); }
       to { transform: translateX(100%); }
     }
 
-    @media (max-width: 820px) {
+    @media (max-width: 900px) {
       .shell {
         width: min(100% - 24px, 680px);
         padding-top: 24px;
       }
 
       .masthead,
+      .manager,
       .toolbar {
         grid-template-columns: 1fr;
       }
@@ -525,7 +667,8 @@
         width: 100%;
       }
 
-      .refresh {
+      .refresh,
+      .logout {
         width: 100%;
       }
     }
@@ -541,16 +684,27 @@
           <div class="hostline">
             <span>当前主机</span>
             <span class="host-pill" id="hostPill">localhost</span>
+            <span class="host-pill" id="configPill">config.json</span>
           </div>
         </div>
       </section>
 
       <section class="summary" aria-label="服务概览">
-        <div class="metric"><strong id="totalCount">0</strong><span>进程</span></div>
+        <div class="metric"><strong id="totalCount">0</strong><span>导航</span></div>
         <div class="metric"><strong id="onlineCount">0</strong><span>在线</span></div>
         <div class="metric"><strong id="portCount">0</strong><span>可跳转</span></div>
       </section>
     </header>
+
+    <form class="manager" id="customForm">
+      <label class="field">
+        <input id="customName" type="text" placeholder="名称" maxlength="80" autocomplete="off">
+      </label>
+      <label class="field">
+        <input id="customTarget" type="text" placeholder="完整链接或端口" maxlength="500" autocomplete="off">
+      </label>
+      <button class="solid" type="submit">新增</button>
+    </form>
 
     <section class="toolbar" aria-label="筛选工具">
       <label class="search">
@@ -560,9 +714,13 @@
         <button class="segment" type="button" data-filter="all" aria-pressed="true">全部</button>
         <button class="segment" type="button" data-filter="online" aria-pressed="false">在线</button>
         <button class="segment" type="button" data-filter="with-port" aria-pressed="false">端口</button>
+        <button class="segment" type="button" data-filter="custom" aria-pressed="false">自定义</button>
       </div>
       <button class="refresh" id="refreshButton" type="button" aria-label="刷新">
         <span class="refresh-icon" aria-hidden="true"></span>
+      </button>
+      <button class="logout" id="logoutButton" type="button" aria-label="退出">
+        <span class="logout-icon" aria-hidden="true"></span>
       </button>
     </section>
 
@@ -578,16 +736,31 @@
     </section>
   </main>
 
+  <dialog class="dialog" id="aliasDialog">
+    <form id="aliasForm" method="dialog">
+      <h2>PM2 别名</h2>
+      <p id="aliasSource"></p>
+      <input class="dialog-input" id="aliasInput" type="text" placeholder="留空恢复原名" maxlength="80" autocomplete="off">
+      <div class="dialog-actions">
+        <button class="subtle" id="aliasCancel" type="button">取消</button>
+        <button class="solid" type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
+
   <script>
     const state = {
       apps: [],
+      customLinks: [],
       filter: 'all',
       query: '',
       loading: false,
+      aliasTarget: null,
     };
 
     const appGrid = document.querySelector('#appGrid');
     const hostPill = document.querySelector('#hostPill');
+    const configPill = document.querySelector('#configPill');
     const totalCount = document.querySelector('#totalCount');
     const onlineCount = document.querySelector('#onlineCount');
     const portCount = document.querySelector('#portCount');
@@ -595,15 +768,64 @@
     const updatedText = document.querySelector('#updatedText');
     const searchInput = document.querySelector('#searchInput');
     const refreshButton = document.querySelector('#refreshButton');
+    const logoutButton = document.querySelector('#logoutButton');
+    const customForm = document.querySelector('#customForm');
+    const customName = document.querySelector('#customName');
+    const customTarget = document.querySelector('#customTarget');
+    const aliasDialog = document.querySelector('#aliasDialog');
+    const aliasForm = document.querySelector('#aliasForm');
+    const aliasInput = document.querySelector('#aliasInput');
+    const aliasSource = document.querySelector('#aliasSource');
+    const aliasCancel = document.querySelector('#aliasCancel');
     const filterButtons = Array.from(document.querySelectorAll('[data-filter]'));
 
     hostPill.textContent = location.hostname || 'localhost';
+
     searchInput.addEventListener('input', function (event) {
       state.query = event.target.value.trim().toLowerCase();
       render();
     });
 
     refreshButton.addEventListener('click', loadApps);
+    logoutButton.addEventListener('click', logout);
+
+    customForm.addEventListener('submit', async function (event) {
+      event.preventDefault();
+      const name = customName.value.trim();
+      const target = customTarget.value.trim();
+      if (!name || !target) return;
+
+      await apiFetch('/api/custom-links', {
+        method: 'POST',
+        body: { name, target },
+      });
+
+      customName.value = '';
+      customTarget.value = '';
+      await loadApps();
+    });
+
+    aliasForm.addEventListener('submit', async function (event) {
+      event.preventDefault();
+      if (!state.aliasTarget) return;
+
+      await apiFetch('/api/aliases', {
+        method: 'POST',
+        body: {
+          configKey: state.aliasTarget.configKey,
+          alias: aliasInput.value.trim(),
+        },
+      });
+
+      aliasDialog.close();
+      state.aliasTarget = null;
+      await loadApps();
+    });
+
+    aliasCancel.addEventListener('click', function () {
+      aliasDialog.close();
+      state.aliasTarget = null;
+    });
 
     filterButtons.forEach(function (button) {
       button.addEventListener('click', function () {
@@ -625,14 +847,13 @@
       refreshButton.disabled = true;
 
       try {
-        const response = await fetch('/api/apps', { cache: 'no-store' });
-        const payload = await response.json();
-
-        if (!payload.ok) {
-          throw new Error(payload.message || 'PM2 读取失败');
-        }
-
+        const payload = await apiFetch('/api/apps', { method: 'GET' });
         state.apps = payload.apps || [];
+        state.customLinks = payload.customLinks || [];
+        configPill.textContent = payload.config && payload.config.configPath
+          ? shortPath(payload.config.configPath)
+          : 'config.json';
+        logoutButton.hidden = !(payload.config && payload.config.authRequired);
         updatedText.textContent = '更新于 ' + formatClock(payload.generatedAt);
         render();
       } catch (error) {
@@ -644,15 +865,16 @@
     }
 
     function render() {
-      const apps = getVisibleApps();
-      totalCount.textContent = String(state.apps.length);
+      const items = getVisibleItems();
+      const allItems = getAllItems();
+      totalCount.textContent = String(allItems.length);
       onlineCount.textContent = String(state.apps.filter(function (app) { return app.status === 'online'; }).length);
-      portCount.textContent = String(state.apps.filter(function (app) { return Boolean(app.port); }).length);
-      resultText.textContent = apps.length + ' 个结果';
+      portCount.textContent = String(allItems.filter(hasTarget).length);
+      resultText.textContent = items.length + ' 个结果';
 
       appGrid.innerHTML = '';
 
-      if (!apps.length) {
+      if (!items.length) {
         const empty = document.createElement('div');
         empty.className = 'empty';
         empty.innerHTML = '<strong>没有匹配的服务</strong><span>换一个关键词或筛选条件。</span>';
@@ -660,8 +882,8 @@
         return;
       }
 
-      apps.forEach(function (app) {
-        appGrid.appendChild(createCard(app));
+      items.forEach(function (item) {
+        appGrid.appendChild(item.type === 'custom' ? createCustomCard(item) : createPm2Card(item));
       });
     }
 
@@ -680,26 +902,41 @@
       appGrid.appendChild(panel);
     }
 
-    function getVisibleApps() {
-      return state.apps.filter(function (app) {
-        if (state.filter === 'online' && app.status !== 'online') return false;
-        if (state.filter === 'with-port' && !app.port) return false;
+    function getVisibleItems() {
+      return getAllItems().filter(function (item) {
+        if (state.filter === 'online' && item.status !== 'online') return false;
+        if (state.filter === 'with-port' && !hasTarget(item)) return false;
+        if (state.filter === 'custom' && item.type !== 'custom') return false;
 
         if (!state.query) return true;
         const haystack = [
-          app.name,
-          app.namespace,
-          app.status,
-          app.port,
-          app.pid,
-          app.mode,
+          item.name,
+          item.originalName,
+          item.namespace,
+          item.status,
+          item.port,
+          item.url,
+          item.pid,
+          item.mode,
         ].filter(Boolean).join(' ').toLowerCase();
 
         return haystack.includes(state.query);
       });
     }
 
-    function createCard(app) {
+    function getAllItems() {
+      const customItems = state.customLinks.map(function (link) {
+        return {
+          ...link,
+          type: 'custom',
+          status: 'custom',
+        };
+      });
+
+      return state.apps.concat(customItems);
+    }
+
+    function createPm2Card(app) {
       const card = document.createElement('article');
       card.className = 'service ' + normalizeStatus(app.status);
 
@@ -711,15 +948,10 @@
       const title = document.createElement('strong');
       title.textContent = app.name;
       const namespace = document.createElement('span');
-      namespace.textContent = '#' + app.id + ' / ' + (app.namespace || 'default');
+      namespace.textContent = '#' + app.id + ' / ' + (app.namespace || 'default') + originalSuffix(app);
       name.append(title, namespace);
 
-      const badge = document.createElement('span');
-      badge.className = 'badge';
-      badge.innerHTML = '<span class="dot" aria-hidden="true"></span><span></span>';
-      badge.querySelector('span:last-child').textContent = app.status || 'unknown';
-
-      top.append(name, badge);
+      top.append(name, createBadge(app.status || 'unknown'));
 
       const meta = document.createElement('div');
       meta.className = 'meta';
@@ -730,8 +962,70 @@
         createCell('重启', app.restarts || 0),
       );
 
-      card.append(top, meta, createLaunch(app));
+      const actions = document.createElement('div');
+      actions.className = 'card-actions';
+      const aliasButton = document.createElement('button');
+      aliasButton.className = 'subtle';
+      aliasButton.type = 'button';
+      aliasButton.textContent = '别名';
+      aliasButton.addEventListener('click', function () {
+        openAliasDialog(app);
+      });
+      actions.append(aliasButton);
+
+      card.append(top, meta, createLaunch(app), actions);
       return card;
+    }
+
+    function createCustomCard(link) {
+      const card = document.createElement('article');
+      card.className = 'service custom';
+
+      const top = document.createElement('div');
+      top.className = 'service-top';
+
+      const name = document.createElement('div');
+      name.className = 'name';
+      const title = document.createElement('strong');
+      title.textContent = link.name;
+      const source = document.createElement('span');
+      source.textContent = link.port ? 'port / ' + link.port : 'url';
+      name.append(title, source);
+
+      top.append(name, createBadge('custom'));
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.append(
+        createCell('类型', link.port ? '端口' : '链接'),
+        createCell('目标', link.port || trimProtocol(link.url)),
+        createCell('创建', formatDate(link.createdAt)),
+        createCell('更新', formatDate(link.updatedAt)),
+      );
+
+      const actions = document.createElement('div');
+      actions.className = 'card-actions';
+      const deleteButton = document.createElement('button');
+      deleteButton.className = 'subtle';
+      deleteButton.type = 'button';
+      deleteButton.textContent = '删除';
+      deleteButton.addEventListener('click', async function () {
+        if (!window.confirm('删除这个导航？')) return;
+        await apiFetch('/api/custom-links/' + encodeURIComponent(link.id), { method: 'DELETE' });
+        await loadApps();
+      });
+      actions.append(deleteButton);
+
+      card.append(top, meta, createLaunch(link), actions);
+      return card;
+    }
+
+    function createBadge(text) {
+      const badge = document.createElement('span');
+      badge.className = 'badge';
+      badge.innerHTML = '<span class="dot" aria-hidden="true"></span><span></span>';
+      badge.querySelector('span:last-child').textContent = text;
+      return badge;
     }
 
     function createCell(label, value) {
@@ -740,20 +1034,20 @@
       const labelNode = document.createElement('span');
       labelNode.textContent = label;
       const valueNode = document.createElement('strong');
-      valueNode.textContent = String(value);
+      valueNode.textContent = value === 0 ? '0' : String(value || '-');
       cell.append(labelNode, valueNode);
       return cell;
     }
 
-    function createLaunch(app) {
-      if (!app.port) {
+    function createLaunch(item) {
+      const href = getHref(item);
+      if (!href) {
         const unavailable = document.createElement('div');
         unavailable.className = 'unavailable';
         unavailable.innerHTML = '<span>未检测到端口</span><span>env / listen</span>';
         return unavailable;
       }
 
-      const href = buildServiceUrl(app.port);
       const link = document.createElement('a');
       link.className = 'launch';
       link.href = href;
@@ -761,7 +1055,7 @@
       link.rel = 'noreferrer';
 
       const code = document.createElement('code');
-      code.textContent = href.replace(/^https?:\/\//, '');
+      code.textContent = trimProtocol(href);
 
       const arrow = document.createElement('span');
       arrow.className = 'arrow';
@@ -770,6 +1064,53 @@
 
       link.append(code, arrow);
       return link;
+    }
+
+    function openAliasDialog(app) {
+      state.aliasTarget = app;
+      aliasSource.textContent = app.originalName || app.name;
+      aliasInput.value = app.alias || '';
+      aliasDialog.showModal();
+      aliasInput.focus();
+    }
+
+    async function logout() {
+      await fetch('/api/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      location.href = '/login';
+    }
+
+    async function apiFetch(path, options) {
+      const response = await fetch(path, {
+        method: options.method || 'GET',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: options.body ? JSON.stringify(options.body) : undefined,
+      });
+
+      if (response.status === 401) {
+        location.href = '/login';
+        throw new Error('需要登录');
+      }
+
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.message || '请求失败');
+      }
+
+      return payload;
+    }
+
+    function hasTarget(item) {
+      return Boolean(item.url || item.port);
+    }
+
+    function getHref(item) {
+      if (item.url) return item.url;
+      if (item.port) return buildServiceUrl(item.port);
+      return null;
     }
 
     function buildServiceUrl(port) {
@@ -783,6 +1124,11 @@
         return '[' + hostname + ']';
       }
       return hostname;
+    }
+
+    function originalSuffix(app) {
+      if (!app.alias || !app.originalName || app.originalName === app.name) return '';
+      return ' / ' + app.originalName;
     }
 
     function normalizeStatus(status) {
@@ -805,6 +1151,23 @@
     function formatClock(value) {
       const date = value ? new Date(value) : new Date();
       return date.toLocaleTimeString('zh-CN', { hour12: false });
+    }
+
+    function formatDate(value) {
+      if (!value) return '-';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return '-';
+      return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+    }
+
+    function trimProtocol(value) {
+      return String(value || '').replace(/^https?:\/\//, '');
+    }
+
+    function shortPath(value) {
+      const text = String(value || '');
+      const parts = text.split('/');
+      return parts.slice(-2).join('/') || text;
     }
   </script>
 </body>
