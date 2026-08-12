@@ -2,8 +2,10 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const os = require('node:os');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { HttpsProxyManager, normalizeHostname } = require('./https-proxy');
 
 const execFileAsync = promisify(execFile);
 
@@ -20,8 +22,15 @@ const LOGIN_PATH = path.join(__dirname, 'public', 'login.html');
 const SESSION_COOKIE = 'pm2_nav_session';
 const SESSION_TTL_MS = toInteger(process.env.PM2_NAV_SESSION_TTL_MS, 7 * 24 * 60 * 60 * 1000);
 const BODY_LIMIT_BYTES = toInteger(process.env.PM2_NAV_BODY_LIMIT_BYTES, 64 * 1024);
+const HTTPS_DATA_DIR = process.env.PM2_NAV_HTTPS_DIR || path.join(DATA_DIR, 'https');
+const OPENSSL_BIN = process.env.PM2_NAV_OPENSSL_BIN || 'openssl';
 const sessions = new Map();
 let configWriteQueue = Promise.resolve();
+const httpsProxyManager = new HttpsProxyManager({
+  dataDir: HTTPS_DATA_DIR,
+  listenHost: NAV_HOST,
+  opensslBin: OPENSSL_BIN,
+});
 
 const PORT_KEYS = [
   'PORT',
@@ -118,9 +127,10 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(NAV_PORT, NAV_HOST, () => {
+server.listen(NAV_PORT, NAV_HOST, async () => {
   console.log(`PM2 nav is listening on http://${NAV_HOST}:${NAV_PORT}`);
   console.log(`PM2 nav config path: ${CONFIG_PATH}`);
+  await httpsProxyManager.sync(loadConfig().httpsProxies);
 });
 
 server.on('error', (error) => {
@@ -161,6 +171,22 @@ async function handleApi(req, res, requestUrl, config) {
 
   if (requestUrl.pathname === '/api/aliases' && req.method === 'POST') {
     await handleAlias(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === '/api/https-proxies' && req.method === 'POST') {
+    await handleCreateHttpsProxy(req, res, config);
+    return;
+  }
+
+  const httpsProxyMatch = requestUrl.pathname.match(/^\/api\/https-proxies\/([^/]+)$/);
+  if (httpsProxyMatch && req.method === 'DELETE') {
+    await handleDeleteHttpsProxy(res, decodeURIComponent(httpsProxyMatch[1]));
+    return;
+  }
+
+  if (requestUrl.pathname === '/api/https-ca' && req.method === 'GET') {
+    handleDownloadHttpsCa(res);
     return;
   }
 
@@ -210,15 +236,23 @@ function handleLogout(res) {
 
 async function handleApps(res, config) {
   const apps = await getPm2Apps(config);
+  const httpsProxies = httpsProxyManager.describe(config.httpsProxies);
+  const httpsByConfigKey = new Map(httpsProxies.map((proxy) => [proxy.configKey, proxy]));
+  const appsWithHttps = apps.map((app) => ({
+    ...app,
+    httpsProxy: httpsByConfigKey.get(app.configKey) || null,
+  }));
   sendJson(res, 200, {
     ok: true,
     config: {
       authRequired: isAuthEnabled(config),
       configPath: CONFIG_PATH,
+      suggestedHostname: getLanAddresses()[0] || null,
     },
     generatedAt: new Date().toISOString(),
-    apps,
+    apps: appsWithHttps,
     customLinks: config.customLinks,
+    httpsProxies,
   });
 }
 
@@ -290,6 +324,83 @@ async function handleAlias(req, res) {
   });
 
   sendJson(res, 200, { ok: true, configKey, alias: alias || null });
+}
+
+async function handleCreateHttpsProxy(req, res, currentConfig) {
+  const body = await readJsonBody(req);
+  const configKey = cleanText(body.configKey, 160);
+  const apps = await getPm2Apps(currentConfig);
+  const app = apps.find((item) => item.configKey === configKey);
+
+  if (!app) throw new PublicError(404, '找不到对应的 PM2 服务');
+  if (currentConfig.httpsProxies.some((item) => item.configKey === configKey)) {
+    throw new PublicError(409, '该服务已经配置 HTTPS，请先移除现有配置');
+  }
+
+  let proxy;
+  try {
+    proxy = buildHttpsProxy({
+      ...body,
+      configKey,
+      name: app.name,
+      sourcePort: body.sourcePort || app.port,
+    });
+  } catch (error) {
+    throw new PublicError(400, error.message);
+  }
+
+  if (proxy.httpsPort === NAV_PORT) {
+    throw new PublicError(409, `HTTPS 端口不能与 PM2 Nav 的 ${NAV_PORT} 端口相同`);
+  }
+  if (currentConfig.httpsProxies.some((item) => item.httpsPort === proxy.httpsPort)) {
+    throw new PublicError(409, `HTTPS 端口 ${proxy.httpsPort} 已被其他网关使用`);
+  }
+
+  try {
+    await httpsProxyManager.start(proxy);
+    await updateConfig((config) => {
+      if (config.httpsProxies.some((item) => item.configKey === proxy.configKey)) {
+        throw new PublicError(409, '该服务已经配置 HTTPS');
+      }
+      config.httpsProxies.push(proxy);
+      return proxy;
+    });
+  } catch (error) {
+    await httpsProxyManager.stop(proxy.id);
+    throw error instanceof PublicError ? error : new PublicError(500, error.message);
+  }
+
+  sendJson(res, 201, {
+    ok: true,
+    httpsProxy: httpsProxyManager.describeOne(proxy),
+  });
+}
+
+async function handleDeleteHttpsProxy(res, id) {
+  await updateConfig((config) => {
+    const next = config.httpsProxies.filter((item) => item.id !== id);
+    if (next.length === config.httpsProxies.length) {
+      throw new PublicError(404, 'HTTPS 配置不存在');
+    }
+    config.httpsProxies = next;
+    return null;
+  });
+  await httpsProxyManager.stop(id);
+  sendJson(res, 200, { ok: true });
+}
+
+function handleDownloadHttpsCa(res) {
+  const caPath = httpsProxyManager.getCaCertificatePath();
+  if (!caPath) throw new PublicError(404, '尚未生成局域网 CA 证书');
+
+  const certificate = fs.readFileSync(caPath);
+  res.writeHead(200, {
+    'Content-Type': 'application/x-x509-ca-cert',
+    'Content-Disposition': 'attachment; filename="pm2-nav-lan-ca.crt"',
+    'Content-Length': certificate.length,
+    'Cache-Control': 'no-store',
+  });
+  res.end(certificate);
 }
 
 async function getPm2Apps(config) {
@@ -575,8 +686,11 @@ function normalizeConfig(input) {
   const customLinks = Array.isArray(config.customLinks)
     ? config.customLinks.map(normalizeCustomLink).filter(Boolean)
     : [];
+  const httpsProxies = Array.isArray(config.httpsProxies)
+    ? config.httpsProxies.map(normalizeHttpsProxy).filter(Boolean)
+    : [];
 
-  return { auth, aliases, customLinks };
+  return { auth, aliases, customLinks, httpsProxies };
 }
 
 function buildCustomLink(input) {
@@ -625,6 +739,41 @@ function normalizeCustomLink(input) {
       createdAt: cleanText(input.createdAt, 40) || link.createdAt,
       updatedAt: cleanText(input.updatedAt, 40) || link.updatedAt,
     };
+  } catch {
+    return null;
+  }
+}
+
+function buildHttpsProxy(input) {
+  const id = cleanText(input.id, 80) || crypto.randomUUID();
+  const configKey = cleanText(input.configKey, 160);
+  const name = cleanText(input.name, 80) || configKey;
+  const sourcePort = parsePort(input.sourcePort);
+  const httpsPort = parsePort(input.httpsPort);
+  const hostname = normalizeHostname(input.hostname);
+
+  if (!configKey) throw new Error('缺少 PM2 服务标识');
+  if (!sourcePort) throw new Error('未检测到有效的 HTTP 源端口');
+  if (!httpsPort) throw new Error('请输入有效的 HTTPS 端口');
+  if (sourcePort === httpsPort) throw new Error('HTTP 源端口与 HTTPS 端口不能相同');
+
+  const now = new Date().toISOString();
+  return {
+    id,
+    configKey,
+    name,
+    sourcePort,
+    httpsPort,
+    hostname,
+    createdAt: cleanText(input.createdAt, 40) || now,
+    updatedAt: cleanText(input.updatedAt, 40) || now,
+  };
+}
+
+function normalizeHttpsProxy(input) {
+  if (!isPlainObject(input)) return null;
+  try {
+    return buildHttpsProxy(input);
   } catch {
     return null;
   }
@@ -819,6 +968,13 @@ function createAppConfigKey(namespace, name) {
 
 function getRequestOrigin(req) {
   return `http://${req.headers.host || 'localhost'}`;
+}
+
+function getLanAddresses() {
+  return Object.values(os.networkInterfaces())
+    .flat()
+    .filter((address) => address && address.family === 'IPv4' && !address.internal)
+    .map((address) => address.address);
 }
 
 function sendRedirect(res, location) {

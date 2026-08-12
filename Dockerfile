@@ -1,6 +1,6 @@
 FROM node:22-alpine
 
-RUN apk add --no-cache ca-certificates lsof procps \
+RUN apk add --no-cache ca-certificates lsof openssl procps \
   && npm install -g pm2@latest \
   && npm cache clean --force
 
@@ -18,6 +18,7 @@ ENV NODE_ENV=production \
 
 COPY package.json ./
 COPY server.js ./server.js
+COPY https-proxy.js ./https-proxy.js
 COPY public ./public
 
 VOLUME ["/data"]

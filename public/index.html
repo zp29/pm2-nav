@@ -566,6 +566,21 @@
       color: var(--ink);
     }
 
+    .subtle:disabled {
+      cursor: not-allowed;
+      opacity: .48;
+    }
+
+    .subtle.secure-action {
+      border-color: rgba(22, 122, 104, .35);
+      background: var(--mint-soft);
+      color: var(--mint);
+    }
+
+    .subtle.danger-action {
+      color: var(--coral);
+    }
+
     .empty,
     .error {
       min-height: 190px;
@@ -628,9 +643,90 @@
 
     .dialog-actions {
       display: flex;
+      flex-wrap: wrap;
       gap: 10px;
       justify-content: flex-end;
       margin-top: 14px;
+    }
+
+    .dialog-wide {
+      width: min(540px, calc(100vw - 28px));
+    }
+
+    .https-flow {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+      margin: 16px 0;
+    }
+
+    .https-endpoint {
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--paper);
+    }
+
+    .https-endpoint span,
+    .dialog-field span {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--quiet);
+      font-size: 11px;
+    }
+
+    .https-endpoint code {
+      display: block;
+      overflow-wrap: anywhere;
+      color: var(--ink);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+    }
+
+    .https-arrow {
+      color: var(--mint);
+      font-size: 20px;
+    }
+
+    .dialog-fields {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(120px, .65fr);
+      gap: 10px;
+    }
+
+    .dialog-field {
+      min-width: 0;
+    }
+
+    .https-note {
+      margin: 14px 0 0 !important;
+      padding: 11px 12px;
+      border-left: 3px solid var(--gold);
+      background: var(--gold-soft);
+      color: #6e521b !important;
+      line-height: 1.55;
+    }
+
+    .dialog-error {
+      display: block;
+      margin-top: 12px;
+      color: var(--coral);
+      font-size: 13px;
+    }
+
+    .ca-link {
+      display: inline-flex;
+      min-height: 34px;
+      align-items: center;
+      margin-right: auto;
+      padding: 0 11px;
+      border: 1px solid rgba(22, 122, 104, .35);
+      border-radius: 6px;
+      background: var(--mint-soft);
+      color: var(--mint);
+      font-size: 12px;
     }
 
     @keyframes sweep {
@@ -670,6 +766,16 @@
       .refresh,
       .logout {
         width: 100%;
+      }
+
+      .https-flow,
+      .dialog-fields {
+        grid-template-columns: 1fr;
+      }
+
+      .https-arrow {
+        transform: rotate(90deg);
+        text-align: center;
       }
     }
   </style>
@@ -748,6 +854,42 @@
     </form>
   </dialog>
 
+  <dialog class="dialog dialog-wide" id="httpsDialog">
+    <form id="httpsForm">
+      <h2>局域网 HTTPS 网关</h2>
+      <p id="httpsSourceName"></p>
+      <div class="https-flow" aria-label="HTTPS 转换路径">
+        <div class="https-endpoint">
+          <span>HTTP 源服务</span>
+          <code id="httpsSourceUrl">http://127.0.0.1:-</code>
+        </div>
+        <div class="https-arrow" aria-hidden="true">→</div>
+        <div class="https-endpoint">
+          <span>HTTPS 局域网入口</span>
+          <code id="httpsPreviewUrl">https://localhost:-</code>
+        </div>
+      </div>
+      <div class="dialog-fields">
+        <label class="dialog-field">
+          <span>证书 IP / 主机名</span>
+          <input class="dialog-input" id="httpsHostname" type="text" maxlength="253" required autocomplete="off">
+        </label>
+        <label class="dialog-field">
+          <span>HTTPS 端口</span>
+          <input class="dialog-input" id="httpsPort" type="number" min="1" max="65535" required inputmode="numeric">
+        </label>
+      </div>
+      <p class="https-note">网关会代理普通 HTTP 与 WebSocket。首次使用时，请在访问设备上导入 CA 公钥证书；PM2 Nav 不会自动修改系统信任设置。</p>
+      <output class="dialog-error" id="httpsError" hidden></output>
+      <div class="dialog-actions">
+        <a class="ca-link" id="httpsCaDownload" href="/api/https-ca" download hidden>下载 CA 证书</a>
+        <button class="subtle danger-action" id="httpsDelete" type="button" hidden>移除网关</button>
+        <button class="subtle" id="httpsCancel" type="button">取消</button>
+        <button class="solid" id="httpsSubmit" type="submit">启用 HTTPS</button>
+      </div>
+    </form>
+  </dialog>
+
   <script>
     const state = {
       apps: [],
@@ -756,6 +898,8 @@
       query: '',
       loading: false,
       aliasTarget: null,
+      httpsTarget: null,
+      suggestedHostname: null,
     };
 
     const appGrid = document.querySelector('#appGrid');
@@ -777,6 +921,18 @@
     const aliasInput = document.querySelector('#aliasInput');
     const aliasSource = document.querySelector('#aliasSource');
     const aliasCancel = document.querySelector('#aliasCancel');
+    const httpsDialog = document.querySelector('#httpsDialog');
+    const httpsForm = document.querySelector('#httpsForm');
+    const httpsSourceName = document.querySelector('#httpsSourceName');
+    const httpsSourceUrl = document.querySelector('#httpsSourceUrl');
+    const httpsPreviewUrl = document.querySelector('#httpsPreviewUrl');
+    const httpsHostname = document.querySelector('#httpsHostname');
+    const httpsPort = document.querySelector('#httpsPort');
+    const httpsError = document.querySelector('#httpsError');
+    const httpsDelete = document.querySelector('#httpsDelete');
+    const httpsCancel = document.querySelector('#httpsCancel');
+    const httpsSubmit = document.querySelector('#httpsSubmit');
+    const httpsCaDownload = document.querySelector('#httpsCaDownload');
     const filterButtons = Array.from(document.querySelectorAll('[data-filter]'));
 
     hostPill.textContent = location.hostname || 'localhost';
@@ -827,6 +983,59 @@
       state.aliasTarget = null;
     });
 
+    httpsHostname.addEventListener('input', updateHttpsPreview);
+    httpsPort.addEventListener('input', updateHttpsPreview);
+
+    httpsForm.addEventListener('submit', async function (event) {
+      event.preventDefault();
+      if (!state.httpsTarget || state.httpsTarget.httpsProxy) return;
+
+      setHttpsBusy(true);
+      showHttpsError('');
+      try {
+        await apiFetch('/api/https-proxies', {
+          method: 'POST',
+          body: {
+            configKey: state.httpsTarget.configKey,
+            sourcePort: state.httpsTarget.port,
+            httpsPort: Number(httpsPort.value),
+            hostname: httpsHostname.value.trim(),
+          },
+        });
+        httpsDialog.close();
+        state.httpsTarget = null;
+        await loadApps();
+      } catch (error) {
+        showHttpsError(error.message);
+      } finally {
+        setHttpsBusy(false);
+      }
+    });
+
+    httpsDelete.addEventListener('click', async function () {
+      const proxy = state.httpsTarget && state.httpsTarget.httpsProxy;
+      if (!proxy || !window.confirm('移除这个 HTTPS 网关？证书文件会保留以便其他网关继续使用。')) return;
+
+      setHttpsBusy(true);
+      showHttpsError('');
+      try {
+        await apiFetch('/api/https-proxies/' + encodeURIComponent(proxy.id), { method: 'DELETE' });
+        httpsDialog.close();
+        state.httpsTarget = null;
+        await loadApps();
+      } catch (error) {
+        showHttpsError(error.message);
+      } finally {
+        setHttpsBusy(false);
+      }
+    });
+
+    httpsCancel.addEventListener('click', function () {
+      httpsDialog.close();
+      state.httpsTarget = null;
+      showHttpsError('');
+    });
+
     filterButtons.forEach(function (button) {
       button.addEventListener('click', function () {
         state.filter = button.dataset.filter;
@@ -850,6 +1059,7 @@
         const payload = await apiFetch('/api/apps', { method: 'GET' });
         state.apps = payload.apps || [];
         state.customLinks = payload.customLinks || [];
+        state.suggestedHostname = payload.config && payload.config.suggestedHostname;
         configPill.textContent = payload.config && payload.config.configPath
           ? shortPath(payload.config.configPath)
           : 'config.json';
@@ -973,7 +1183,25 @@
       });
       actions.append(aliasButton);
 
-      card.append(top, meta, createLaunch(app), actions);
+      const httpsButton = document.createElement('button');
+      httpsButton.className = 'subtle' + (app.httpsProxy ? ' secure-action' : '');
+      httpsButton.type = 'button';
+      httpsButton.disabled = !app.port;
+      httpsButton.textContent = app.httpsProxy
+        ? 'HTTPS · ' + app.httpsProxy.httpsPort
+        : '启用 HTTPS';
+      httpsButton.title = app.httpsProxy && app.httpsProxy.error
+        ? app.httpsProxy.error
+        : (app.port ? '创建局域网 HTTPS 网关' : '未检测到源端口');
+      httpsButton.addEventListener('click', function () {
+        openHttpsDialog(app);
+      });
+      actions.append(httpsButton);
+
+      const launchTarget = app.httpsProxy && app.httpsProxy.status === 'online'
+        ? { url: app.httpsProxy.url }
+        : app;
+      card.append(top, meta, createLaunch(launchTarget), actions);
       return card;
     }
 
@@ -1072,6 +1300,51 @@
       aliasInput.value = app.alias || '';
       aliasDialog.showModal();
       aliasInput.focus();
+    }
+
+    function openHttpsDialog(app) {
+      if (!app.port) return;
+
+      const proxy = app.httpsProxy;
+      state.httpsTarget = app;
+      httpsSourceName.textContent = app.name + ' · ' + app.configKey;
+      httpsSourceUrl.textContent = 'http://127.0.0.1:' + app.port;
+      httpsHostname.value = proxy
+        ? proxy.hostname
+        : (state.suggestedHostname || location.hostname || 'localhost');
+      httpsPort.value = proxy ? proxy.httpsPort : suggestHttpsPort(app.port);
+      httpsHostname.disabled = Boolean(proxy);
+      httpsPort.disabled = Boolean(proxy);
+      httpsDelete.hidden = !proxy;
+      httpsCaDownload.hidden = !proxy;
+      httpsSubmit.hidden = Boolean(proxy);
+      showHttpsError(proxy && proxy.error ? proxy.error : '');
+      updateHttpsPreview();
+      httpsDialog.showModal();
+      if (!proxy) httpsPort.focus();
+    }
+
+    function updateHttpsPreview() {
+      const hostname = httpsHostname.value.trim() || 'localhost';
+      const port = httpsPort.value || '-';
+      httpsPreviewUrl.textContent = 'https://' + formatHostname(hostname) + ':' + port;
+    }
+
+    function suggestHttpsPort(sourcePort) {
+      const preferred = Number(sourcePort) + 10000;
+      return preferred <= 65535 ? preferred : Number(sourcePort) + 1;
+    }
+
+    function showHttpsError(message) {
+      httpsError.textContent = message || '';
+      httpsError.hidden = !message;
+    }
+
+    function setHttpsBusy(busy) {
+      httpsSubmit.disabled = busy;
+      httpsDelete.disabled = busy;
+      httpsCancel.disabled = busy;
+      httpsSubmit.textContent = busy ? '处理中…' : '启用 HTTPS';
     }
 
     async function logout() {

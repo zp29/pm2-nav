@@ -11,7 +11,8 @@
 - 支持账号密码登录；配置文件没有账号密码时默认免登录。
 - 支持新增自定义导航，填写名称和完整链接或端口即可。
 - 支持给 PM2 服务设置别名，不影响真实 PM2 进程名和 PM2 命令。
-- 自定义导航、PM2 别名、登录配置都写入本地配置文件，可通过 Docker volume 持久化。
+- 支持为任意 HTTP 服务创建独立端口的局域网 HTTPS 网关，兼容普通请求与 WebSocket/HMR。
+- 自定义导航、PM2 别名、HTTPS 网关和登录配置都写入本地配置文件，可通过 Docker volume 持久化。
 
 ## 启动
 
@@ -46,7 +47,8 @@ cp config.example.json data/config.json
     "password": ""
   },
   "aliases": {},
-  "customLinks": []
+  "customLinks": [],
+  "httpsProxies": []
 }
 ```
 
@@ -111,6 +113,27 @@ PM2 别名用 `namespace/name` 作为 key，默认 namespace 是 `default`：
 
 - `http://localhost` 打开时跳到 `http://localhost:3000`
 - `http://192.168.1.10` 打开时跳到 `http://192.168.1.10:3000`
+
+## HTTP 转 HTTPS 网关
+
+在检测到端口的 PM2 服务卡片上点击“启用 HTTPS”，填写：
+
+- 证书 IP / 主机名：局域网设备访问这台机器时使用的地址，例如 `192.168.1.10`。
+- HTTPS 端口：新的 HTTPS 监听端口，不能和 HTTP 源端口、PM2 Nav 端口或其他服务端口相同。
+
+保存后，PM2 Nav 会：
+
+1. 在 `data/https` 创建本地 CA 和包含目标 IP/主机名 SAN 的服务证书。
+2. 启动 HTTPS 反向代理，把请求转发到该 PM2 服务的 HTTP 端口。
+3. 转发 WebSocket 连接，支持 Vite HMR 等开发场景。
+4. 把卡片主链接切换到新的 HTTPS 地址。
+
+首次使用时，在弹窗中下载 `pm2-nav-lan-ca.crt`，并在每台需要访问的局域网设备上手动导入和信任。PM2 Nav 不会自动修改操作系统的证书信任设置。请妥善保护 `data/https/lan-ca-key.pem`；它是本地 CA 私钥，不应复制给其他设备或提交到 Git。
+
+可选环境变量：
+
+- `PM2_NAV_HTTPS_DIR`：证书目录，默认是 `$PM2_NAV_DATA_DIR/https`。
+- `PM2_NAV_OPENSSL_BIN`：OpenSSL 命令路径，默认是 `openssl`。
 
 ## Docker
 
