@@ -22,7 +22,10 @@ const LOGIN_PATH = path.join(__dirname, 'public', 'login.html');
 const SESSION_COOKIE = 'pm2_nav_session';
 const SESSION_TTL_MS = toInteger(process.env.PM2_NAV_SESSION_TTL_MS, 7 * 24 * 60 * 60 * 1000);
 const BODY_LIMIT_BYTES = toInteger(process.env.PM2_NAV_BODY_LIMIT_BYTES, 64 * 1024);
+const STATIC_IMPORT_LIMIT_BYTES = toInteger(process.env.PM2_NAV_STATIC_IMPORT_LIMIT_BYTES, 25 * 1024 * 1024);
+const STATIC_IMPORT_MAX_FILES = toInteger(process.env.PM2_NAV_STATIC_IMPORT_MAX_FILES, 1000);
 const HTTPS_DATA_DIR = process.env.PM2_NAV_HTTPS_DIR || path.join(DATA_DIR, 'https');
+const STATIC_SITES_DIR = process.env.PM2_NAV_STATIC_SITES_DIR || path.join(DATA_DIR, 'static-sites');
 const OPENSSL_BIN = process.env.PM2_NAV_OPENSSL_BIN || 'openssl';
 const sessions = new Map();
 let configWriteQueue = Promise.resolve();
@@ -109,6 +112,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (requestUrl.pathname.startsWith('/static-sites/') && (req.method === 'GET' || req.method === 'HEAD')) {
+      const guard = requireAuth(req, res);
+      if (!guard.ok) return;
+
+      handleStaticSite(req, res, requestUrl.pathname, guard.config);
+      return;
+    }
+
     if (requestUrl.pathname.startsWith('/api/')) {
       const guard = requireAuth(req, res);
       if (!guard.ok) return;
@@ -155,6 +166,12 @@ async function handleApi(req, res, requestUrl, config) {
 
   if (requestUrl.pathname === '/api/custom-links' && req.method === 'POST') {
     await handleCreateCustomLink(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === '/api/static-sites' && req.method === 'POST') {
+    const imported = await handleImportStaticSite(req);
+    sendJson(res, 201, { ok: true, customLink: imported });
     return;
   }
 
@@ -236,6 +253,7 @@ function handleLogout(res) {
 
 async function handleApps(res, config) {
   const apps = await getPm2Apps(config);
+  const lanAddresses = getLanAddresses();
   const httpsProxies = httpsProxyManager.describe(config.httpsProxies);
   const httpsByConfigKey = new Map(httpsProxies.map((proxy) => [proxy.configKey, proxy]));
   const appsWithHttps = apps.map((app) => ({
@@ -247,7 +265,8 @@ async function handleApps(res, config) {
     config: {
       authRequired: isAuthEnabled(config),
       configPath: CONFIG_PATH,
-      suggestedHostname: getLanAddresses()[0] || null,
+      suggestedHostname: lanAddresses[0] || null,
+      lanAddresses,
     },
     generatedAt: new Date().toISOString(),
     apps: appsWithHttps,
@@ -291,17 +310,150 @@ async function handleUpdateCustomLink(req, res, id) {
 }
 
 async function handleDeleteCustomLink(res, id) {
-  await updateConfig((config) => {
+  const { result: removed } = await updateConfig((config) => {
+    const removedLink = config.customLinks.find((item) => item.id === id);
     const nextLinks = config.customLinks.filter((item) => item.id !== id);
     if (nextLinks.length === config.customLinks.length) {
       throw new PublicError(404, '导航不存在');
     }
 
     config.customLinks = nextLinks;
-    return null;
+    return removedLink;
   });
 
+  if (removed && removed.kind === 'static' && isStaticSiteId(removed.id)) {
+    fs.rmSync(path.join(STATIC_SITES_DIR, removed.id), { recursive: true, force: true });
+  }
+
   sendJson(res, 200, { ok: true });
+}
+
+async function handleImportStaticSite(req) {
+  const parts = await readMultipartBody(req);
+  const name = cleanText(readMultipartText(parts, 'name'), 80);
+  const mode = readMultipartText(parts, 'mode') === 'folder' ? 'folder' : 'file';
+  const files = parts.filter((part) => part.name === 'files' && part.filename !== null);
+  let relativePaths;
+
+  if (!name) throw new PublicError(400, '请输入名称');
+  if (!files.length) throw new PublicError(400, '请选择 HTML 文件或静态站点文件夹');
+  if (files.length > STATIC_IMPORT_MAX_FILES) {
+    throw new PublicError(413, `文件数量不能超过 ${STATIC_IMPORT_MAX_FILES} 个`);
+  }
+
+  try {
+    relativePaths = JSON.parse(readMultipartText(parts, 'paths'));
+  } catch {
+    throw new PublicError(400, '文件路径清单无效');
+  }
+
+  if (!Array.isArray(relativePaths) || relativePaths.length !== files.length) {
+    throw new PublicError(400, '文件路径清单与上传内容不一致');
+  }
+
+  const normalizedPaths = relativePaths.map(normalizeStaticRelativePath);
+  if (new Set(normalizedPaths).size !== normalizedPaths.length) {
+    throw new PublicError(400, '站点中包含重复文件路径');
+  }
+
+  let entry = 'index.html';
+  if (mode === 'file') {
+    if (files.length !== 1 || !/\.html?$/i.test(normalizedPaths[0])) {
+      throw new PublicError(400, '单文件模式只能导入一个 HTML 文件');
+    }
+    normalizedPaths[0] = entry;
+  } else {
+    const indexPath = normalizedPaths.find((item) => item.toLowerCase() === 'index.html');
+    if (!indexPath) throw new PublicError(400, '文件夹根目录需要包含 index.html');
+    entry = indexPath;
+  }
+
+  const id = crypto.randomUUID();
+  const stagingDir = path.join(STATIC_SITES_DIR, `.${id}.${process.pid}.tmp`);
+  const finalDir = path.join(STATIC_SITES_DIR, id);
+  fs.mkdirSync(stagingDir, { recursive: true });
+
+  try {
+    normalizedPaths.forEach((relativePath, index) => {
+      const targetPath = path.join(stagingDir, relativePath);
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, files[index].data);
+    });
+    fs.renameSync(stagingDir, finalDir);
+
+    const totalBytes = files.reduce((sum, file) => sum + file.data.length, 0);
+    const { result: link } = await updateConfig((config) => {
+      const staticLink = buildStaticLink({
+        id,
+        name,
+        entry,
+        fileCount: files.length,
+        sizeBytes: totalBytes,
+      });
+      config.customLinks.push(staticLink);
+      return staticLink;
+    });
+    return link;
+  } catch (error) {
+    fs.rmSync(stagingDir, { recursive: true, force: true });
+    fs.rmSync(finalDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function handleStaticSite(req, res, pathname, config) {
+  const match = pathname.match(/^\/static-sites\/([^/]+)(?:\/(.*))?$/);
+  if (!match) throw new PublicError(404, '静态站点不存在');
+
+  let id;
+  let requestedPath;
+  try {
+    id = decodeURIComponent(match[1]);
+    requestedPath = decodeURIComponent(match[2] || '');
+  } catch {
+    throw new PublicError(400, '静态站点路径无效');
+  }
+
+  const link = config.customLinks.find((item) => item.kind === 'static' && item.id === id);
+  if (!link || !isStaticSiteId(id)) throw new PublicError(404, '静态站点不存在');
+
+  if (!match[2] && !pathname.endsWith('/')) {
+    sendRedirect(res, `${pathname}/`);
+    return;
+  }
+
+  const siteDir = path.join(STATIC_SITES_DIR, id);
+  let relativePath = requestedPath ? normalizeStaticRelativePath(requestedPath) : link.entry;
+  let filePath = path.resolve(siteDir, relativePath);
+  const siteRoot = `${path.resolve(siteDir)}${path.sep}`;
+  if (!filePath.startsWith(siteRoot)) throw new PublicError(400, '静态站点路径无效');
+
+  if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
+    relativePath = path.posix.join(relativePath, 'index.html');
+    filePath = path.resolve(siteDir, relativePath);
+  }
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    throw new PublicError(404, '静态资源不存在');
+  }
+
+  const realSiteDir = fs.realpathSync(siteDir);
+  const realFilePath = fs.realpathSync(filePath);
+  if (!realFilePath.startsWith(`${realSiteDir}${path.sep}`)) {
+    throw new PublicError(400, '静态站点路径无效');
+  }
+
+  const stat = fs.statSync(realFilePath);
+  res.writeHead(200, {
+    'Content-Type': getStaticContentType(realFilePath),
+    'Content-Length': stat.size,
+    'Cache-Control': 'no-cache',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  if (req.method === 'HEAD') {
+    res.end();
+    return;
+  }
+  fs.createReadStream(realFilePath).pipe(res);
 }
 
 async function handleAlias(req, res) {
@@ -729,10 +881,39 @@ function buildCustomLink(input) {
   };
 }
 
+function buildStaticLink(input) {
+  const id = cleanText(input.id, 80);
+  const name = cleanText(input.name, 80);
+  const entry = normalizeStaticRelativePath(input.entry || 'index.html');
+  const fileCount = Math.max(1, toInteger(input.fileCount, 1));
+  const sizeBytes = Math.max(0, toInteger(input.sizeBytes, 0));
+
+  if (!isStaticSiteId(id)) throw new PublicError(400, '静态站点标识无效');
+  if (!name) throw new PublicError(400, '请输入名称');
+  if (!/\.html?$/i.test(entry)) throw new PublicError(400, '静态站点入口必须是 HTML 文件');
+
+  const now = new Date().toISOString();
+  return {
+    id,
+    kind: 'static',
+    name,
+    entry,
+    fileCount,
+    sizeBytes,
+    url: null,
+    port: null,
+    createdAt: cleanText(input.createdAt, 40) || now,
+    updatedAt: cleanText(input.updatedAt, 40) || now,
+  };
+}
+
 function normalizeCustomLink(input) {
   if (!isPlainObject(input)) return null;
 
   try {
+    if (input.kind === 'static') {
+      return buildStaticLink(input);
+    }
     const link = buildCustomLink(input);
     return {
       ...link,
@@ -790,6 +971,52 @@ function normalizeUrl(value) {
   } catch {
     return null;
   }
+}
+
+function normalizeStaticRelativePath(value) {
+  const text = String(value || '').trim().replace(/\\/g, '/');
+  if (!text || text.length > 500 || text.startsWith('/') || text.includes('\0')) {
+    throw new PublicError(400, '静态站点包含无效文件路径');
+  }
+
+  const segments = text.split('/');
+  if (segments.some((segment) => !segment || segment === '.' || segment === '..' || segment.startsWith('.'))) {
+    throw new PublicError(400, '静态站点不能包含隐藏文件或越级路径');
+  }
+
+  return segments.join('/');
+}
+
+function isStaticSiteId(value) {
+  return /^[a-z0-9][a-z0-9-]{0,79}$/i.test(String(value || ''));
+}
+
+function getStaticContentType(filePath) {
+  const extension = path.extname(filePath).toLowerCase();
+  const types = {
+    '.html': 'text/html; charset=utf-8',
+    '.htm': 'text/html; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.mjs': 'text/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.ico': 'image/x-icon',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf': 'font/ttf',
+    '.txt': 'text/plain; charset=utf-8',
+    '.xml': 'application/xml; charset=utf-8',
+    '.pdf': 'application/pdf',
+    '.mp3': 'audio/mpeg',
+    '.mp4': 'video/mp4',
+  };
+  return types[extension] || 'application/octet-stream';
 }
 
 function isAuthEnabled(config) {
@@ -875,18 +1102,7 @@ function parseCookies(header) {
 }
 
 async function readJsonBody(req) {
-  const chunks = [];
-  let size = 0;
-
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > BODY_LIMIT_BYTES) {
-      throw new PublicError(413, '请求内容过大');
-    }
-    chunks.push(chunk);
-  }
-
-  const text = Buffer.concat(chunks).toString('utf8').trim();
+  const text = (await readRequestBody(req, BODY_LIMIT_BYTES)).toString('utf8').trim();
   if (!text) return {};
 
   try {
@@ -894,6 +1110,73 @@ async function readJsonBody(req) {
   } catch {
     throw new PublicError(400, '请求 JSON 无效');
   }
+}
+
+async function readRequestBody(req, limitBytes) {
+  const declaredSize = Number(req.headers['content-length']);
+  if (Number.isFinite(declaredSize) && declaredSize > limitBytes) {
+    throw new PublicError(413, '请求内容过大');
+  }
+
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limitBytes) throw new PublicError(413, '请求内容过大');
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function readMultipartBody(req) {
+  const contentType = String(req.headers['content-type'] || '');
+  const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  const boundary = boundaryMatch && (boundaryMatch[1] || boundaryMatch[2]);
+  if (!boundary || boundary.length > 200) {
+    throw new PublicError(400, '上传格式无效');
+  }
+
+  const body = await readRequestBody(req, STATIC_IMPORT_LIMIT_BYTES);
+  const delimiter = Buffer.from(`--${boundary}`);
+  const nextDelimiter = Buffer.from(`\r\n--${boundary}`);
+  const headerBreak = Buffer.from('\r\n\r\n');
+  const parts = [];
+  let cursor = 0;
+
+  while (cursor < body.length) {
+    const delimiterIndex = body.indexOf(delimiter, cursor);
+    if (delimiterIndex === -1) break;
+    const afterDelimiter = delimiterIndex + delimiter.length;
+    if (body.subarray(afterDelimiter, afterDelimiter + 2).toString() === '--') break;
+
+    const headersStart = afterDelimiter + 2;
+    const headersEnd = body.indexOf(headerBreak, headersStart);
+    if (headersEnd === -1) throw new PublicError(400, '上传内容头部无效');
+    const dataStart = headersEnd + headerBreak.length;
+    const dataEnd = body.indexOf(nextDelimiter, dataStart);
+    if (dataEnd === -1) throw new PublicError(400, '上传内容不完整');
+
+    const headers = body.subarray(headersStart, headersEnd).toString('utf8');
+    const disposition = headers.split('\r\n').find((line) => /^content-disposition:/i.test(line)) || '';
+    const nameMatch = disposition.match(/(?:^|;)\s*name="([^"]*)"/i);
+    const filenameMatch = disposition.match(/(?:^|;)\s*filename="([^"]*)"/i);
+    if (nameMatch) {
+      parts.push({
+        name: nameMatch[1],
+        filename: filenameMatch ? filenameMatch[1] : null,
+        data: body.subarray(dataStart, dataEnd),
+      });
+    }
+    cursor = dataEnd + 2;
+  }
+
+  if (!parts.length) throw new PublicError(400, '上传内容为空');
+  return parts;
+}
+
+function readMultipartText(parts, name) {
+  const part = parts.find((item) => item.name === name && item.filename === null);
+  return part ? part.data.toString('utf8') : '';
 }
 
 function splitArgs(value) {
@@ -971,10 +1254,50 @@ function getRequestOrigin(req) {
 }
 
 function getLanAddresses() {
+  const seen = new Set();
   return Object.values(os.networkInterfaces())
     .flat()
-    .filter((address) => address && address.family === 'IPv4' && !address.internal)
-    .map((address) => address.address);
+    .filter((address) => address && !address.internal && isIpv4Family(address.family))
+    .map((address) => address.address)
+    .filter((address) => {
+      if (!address || seen.has(address) || !isPrivateIpv4(address)) return false;
+      seen.add(address);
+      return true;
+    })
+    .sort(compareLanAddresses);
+}
+
+function isIpv4Family(family) {
+  return family === 'IPv4' || family === 4;
+}
+
+function compareLanAddresses(left, right) {
+  const rank = lanAddressRank(left) - lanAddressRank(right);
+  if (rank) return rank;
+  return left.localeCompare(right, 'en');
+}
+
+function isPrivateIpv4(address) {
+  const parts = String(address || '').split('.').map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+
+  const first = parts[0];
+  const second = parts[1];
+  return first === 10
+    || (first === 192 && second === 168)
+    || (first === 172 && second >= 16 && second <= 31);
+}
+
+function lanAddressRank(address) {
+  const parts = String(address || '').split('.').map(Number);
+  const first = parts[0];
+  const second = parts[1];
+  if (first === 192 && second === 168) return 0;
+  if (first === 10) return 1;
+  if (first === 172 && second >= 16 && second <= 31) return 2;
+  return 3;
 }
 
 function sendRedirect(res, location) {
